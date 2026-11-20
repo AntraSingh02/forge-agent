@@ -47,6 +47,10 @@ export class DiffManager implements vscode.CodeLensProvider {
     });
   }
 
+  private normalizePath(p: string): string {
+    return p.replace(/\\/g, '/').toLowerCase();
+  }
+
   public proposeDiff(filePath: string, originalContent: string, proposedContent: string): ProposedFileDiff {
     const rawPatch = diff.structuredPatch(filePath, filePath, originalContent, proposedContent, '', '');
     const hunks: DiffHunk[] = rawPatch.hunks.map((h, index) => {
@@ -82,7 +86,8 @@ export class DiffManager implements vscode.CodeLensProvider {
       status: 'pending',
     };
 
-    this.proposedDiffs.set(filePath, fileDiff);
+    const key = this.normalizePath(filePath);
+    this.proposedDiffs.set(key, fileDiff);
     this.refreshEditorDecorations();
     this._onDidChangeCodeLenses.fire();
 
@@ -90,7 +95,7 @@ export class DiffManager implements vscode.CodeLensProvider {
   }
 
   public getProposedDiff(filePath: string): ProposedFileDiff | undefined {
-    return this.proposedDiffs.get(filePath);
+    return this.proposedDiffs.get(this.normalizePath(filePath));
   }
 
   public getAllProposedDiffs(): ProposedFileDiff[] {
@@ -98,11 +103,11 @@ export class DiffManager implements vscode.CodeLensProvider {
   }
 
   public async acceptHunk(hunkId: string): Promise<boolean> {
-    for (const [filePath, fileDiff] of this.proposedDiffs.entries()) {
+    for (const [key, fileDiff] of this.proposedDiffs.entries()) {
       const hunk = fileDiff.hunks.find((h) => h.id === hunkId);
       if (hunk) {
         hunk.status = 'accepted';
-        await this.applyAcceptedHunks(filePath);
+        await this.applyAcceptedHunks(fileDiff.filePath);
         return true;
       }
     }
@@ -123,39 +128,47 @@ export class DiffManager implements vscode.CodeLensProvider {
   }
 
   public async acceptAll(filePath: string): Promise<void> {
-    const fileDiff = this.proposedDiffs.get(filePath);
-    if (!fileDiff) {return;}
+    const key = this.normalizePath(filePath);
+    const fileDiff = this.proposedDiffs.get(key);
+    if (!fileDiff) {
+      console.warn(`[DiffManager] No proposed diff found for key: ${key}`);
+      return;
+    }
 
     // Save current content to undo stack before writing to disk
     this.undoStack.push({
-      filePath,
+      filePath: fileDiff.filePath,
       previousContent: fileDiff.originalContent,
     });
 
     fileDiff.hunks.forEach((h) => (h.status = 'accepted'));
     fileDiff.status = 'accepted';
 
-    // Apply change directly to file
-    const uri = vscode.Uri.file(filePath);
-    const edit = new vscode.WorkspaceEdit();
-    const fullRange = new vscode.Range(0, 0, 999999, 0);
-    edit.replace(uri, fullRange, fileDiff.proposedContent);
-    await vscode.workspace.applyEdit(edit);
-    const doc = await vscode.workspace.openTextDocument(uri);
-    await doc.save();
+    // Apply change directly to file using workspace fs (bulletproof for both new and existing files)
+    const uri = vscode.Uri.file(fileDiff.filePath);
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(fileDiff.proposedContent, 'utf8'));
 
-    this.proposedDiffs.delete(filePath);
+    // Open and show in editor
+    try {
+      const doc = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(doc, { preview: false });
+    } catch {}
+
+    this.proposedDiffs.delete(key);
     this.refreshEditorDecorations();
     this._onDidChangeCodeLenses.fire();
 
-    vscode.window.showInformationMessage(`Applied edits to ${vscode.workspace.asRelativePath(filePath)}`);
+    vscode.window.showInformationMessage(`✓ Applied edits to ${vscode.workspace.asRelativePath(fileDiff.filePath)}`);
   }
 
   public rejectAll(filePath: string): void {
-    this.proposedDiffs.delete(filePath);
+    const key = this.normalizePath(filePath);
+    const fileDiff = this.proposedDiffs.get(key);
+    const displayPath = fileDiff?.filePath || filePath;
+    this.proposedDiffs.delete(key);
     this.refreshEditorDecorations();
     this._onDidChangeCodeLenses.fire();
-    vscode.window.showInformationMessage(`Rejected edits for ${vscode.workspace.asRelativePath(filePath)}`);
+    vscode.window.showInformationMessage(`Rejected edits for ${vscode.workspace.asRelativePath(displayPath)}`);
   }
 
   public async undoLastChange(): Promise<boolean> {
@@ -185,7 +198,7 @@ export class DiffManager implements vscode.CodeLensProvider {
 
   public provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
     const filePath = document.uri.fsPath;
-    const fileDiff = this.proposedDiffs.get(filePath);
+    const fileDiff = this.proposedDiffs.get(this.normalizePath(filePath));
     if (!fileDiff) {return [];}
 
     const lenses: vscode.CodeLens[] = [];
@@ -237,7 +250,7 @@ export class DiffManager implements vscode.CodeLensProvider {
   }
 
   private async applyAcceptedHunks(filePath: string): Promise<void> {
-    const fileDiff = this.proposedDiffs.get(filePath);
+    const fileDiff = this.proposedDiffs.get(this.normalizePath(filePath));
     if (!fileDiff) {return;}
 
     const pendingHunks = fileDiff.hunks.filter((h) => h.status === 'pending');
@@ -255,7 +268,7 @@ export class DiffManager implements vscode.CodeLensProvider {
     if (!editor) {return;}
 
     const filePath = editor.document.uri.fsPath;
-    const fileDiff = this.proposedDiffs.get(filePath);
+    const fileDiff = this.proposedDiffs.get(this.normalizePath(filePath));
     if (!fileDiff) {
       editor.setDecorations(this.addedDecoration, []);
       editor.setDecorations(this.removedDecoration, []);

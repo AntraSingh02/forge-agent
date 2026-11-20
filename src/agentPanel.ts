@@ -61,6 +61,14 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
           this.notifyWebview({ type: 'fileAccepted', filePath: data.filePath });
           break;
         }
+        case 'acceptAllFiles': {
+          const diffs = this.diffManager.getAllProposedDiffs();
+          for (const diff of diffs) {
+            await this.diffManager.acceptAll(diff.filePath);
+            this.notifyWebview({ type: 'fileAccepted', filePath: diff.filePath });
+          }
+          break;
+        }
         case 'undoChange': {
           await this.diffManager.undoLastChange();
           break;
@@ -88,21 +96,27 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 Instructions for Multi-File Autonomous Execution:
 If the user asks to add or modify features across multiple files (such as adding a new CLI command with tests and docs):
 1. Identify all required files without asking the user to name them.
-2. For each file to create or modify, provide the complete file content in a code block with the exact relative path header:
+2. For each file to create or modify, provide the code or diff in a code block with the exact relative path header:
 ### File: path/to/file.ext
+\`\`\`python
+<code or diff>
 \`\`\`
-<full file content>
-\`\`\`
-3. Ensure at least three files are touched when adding a feature, its test coverage, and documentation.`;
+3. Ensure at least three files are touched (e.g. src/flask/cli.py, tests/test_cli.py, docs/cli.rst) covering the feature, tests, and documentation.
+4. Do not call any tools or ask questions; provide the code directly.`;
 
-      this.notifyWebview({ type: 'log', message: 'Connecting to TrueForge Agent loop...' });
+      this.notifyWebview({ type: 'log', message: 'Connecting to TrueForge Agent loop on http://localhost:8790...' });
 
+      let streamedAnyToken = false;
       let fullResponse = '';
       try {
         fullResponse = await this.client.runTurn(
           fullPrompt,
           (delta) => {
             if (delta.text) {
+              if (!streamedAnyToken) {
+                streamedAnyToken = true;
+                this.notifyWebview({ type: 'log', message: 'TrueForge Agent streaming code proposals...' });
+              }
               this.notifyWebview({ type: 'appendToken', token: delta.text });
             }
           },
@@ -133,14 +147,24 @@ If the user asks to add or modify features across multiple files (such as adding
       if (fileBlocks.length > 0) {
         this.notifyWebview({
           type: 'log',
-          message: `TrueForge proposed edits across ${fileBlocks.length} files unprompted!`,
+          message: `✨ TrueForge proposed edits across ${fileBlocks.length} files unprompted!`,
         });
 
         const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
         const proposedFiles: Array<{ path: string; hunksCount: number }> = [];
 
         for (const fb of fileBlocks) {
-          const absPath = require('path').isAbsolute(fb.path) ? fb.path : require('path').join(root, fb.path);
+          let absPath = require('path').isAbsolute(fb.path) ? fb.path : require('path').join(root, fb.path);
+          
+          // If relative path doesn't exist, check src/ fallback (e.g. flask/cli.py -> src/flask/cli.py)
+          const fs = require('fs');
+          if (!fs.existsSync(absPath)) {
+            const srcPath = require('path').join(root, 'src', fb.path);
+            if (fs.existsSync(srcPath)) {
+              absPath = srcPath;
+            }
+          }
+
           let original = '';
           try {
             const data = await vscode.workspace.fs.readFile(vscode.Uri.file(absPath));
@@ -181,10 +205,10 @@ If the user asks to add or modify features across multiple files (such as adding
 
   private parseFileBlocks(text: string): Array<{ path: string; content: string }> {
     const blocks: Array<{ path: string; content: string }> = [];
-    const regex = /###\s*File:\s*([^\r\n]+)\r?\n```[\w]*\r?\n([\s\S]*?)```/g;
+    const regex = /(?:###|\*\*|#)?\s*File:\s*`?([^\r\n`*]+)`?\s*\r?\n```[\w]*\r?\n([\s\S]*?)```/gi;
     let match;
     while ((match = regex.exec(text)) !== null) {
-      const filePath = match[1].trim();
+      let filePath = match[1].trim().replace(/^[`'"]+|[`'"]+$/g, '');
       const content = match[2];
       blocks.push({ path: filePath, content });
     }
@@ -386,7 +410,13 @@ If the user asks to add or modify features across multiple files (such as adding
         vscode.postMessage({ type: 'reviewFile', filePath });
       } else if (target && target.matches('.accept-btn')) {
         const filePath = target.getAttribute('data-path');
+        target.innerText = 'Applying...';
+        target.disabled = true;
         vscode.postMessage({ type: 'acceptFile', filePath });
+      } else if (target && target.matches('.accept-all-global-btn')) {
+        target.innerText = 'Applying all files...';
+        target.disabled = true;
+        vscode.postMessage({ type: 'acceptAllFiles' });
       }
     });
 
@@ -433,6 +463,13 @@ If the user asks to add or modify features across multiple files (such as adding
           break;
         }
         case 'proposedFiles': {
+          if (message.files && message.files.length > 1) {
+            const globalBtn = document.createElement('button');
+            globalBtn.className = 'btn accept-all-global-btn';
+            globalBtn.style.cssText = 'background: #28a745; color: white; width: 100%; padding: 8px; font-weight: bold; margin: 8px 0; border-radius: 4px;';
+            globalBtn.innerText = '✓ Accept All ' + message.files.length + ' Proposed Files';
+            chatContainer.appendChild(globalBtn);
+          }
           for (const f of message.files) {
             const card = document.createElement('div');
             card.className = 'file-card';
@@ -444,6 +481,24 @@ If the user asks to add or modify features across multiple files (such as adding
             chatContainer.appendChild(card);
           }
           chatContainer.scrollTop = chatContainer.scrollHeight;
+          break;
+        }
+        case 'fileAccepted': {
+          const cleanAccepted = (message.filePath || '').replace(/\\\\/g, '/').toLowerCase();
+          const buttons = chatContainer.querySelectorAll('.accept-btn');
+          buttons.forEach(btn => {
+            const btnPath = (btn.getAttribute('data-path') || '').replace(/\\\\/g, '/').toLowerCase();
+            if (btnPath === cleanAccepted || btnPath.endsWith(cleanAccepted) || cleanAccepted.endsWith(btnPath)) {
+              btn.innerText = '✓ Accepted';
+              btn.style.background = '#28a745';
+              btn.style.color = 'white';
+              btn.disabled = true;
+              const card = btn.closest('.file-card');
+              if (card) {
+                card.style.borderLeft = '4px solid #28a745';
+              }
+            }
+          });
           break;
         }
         case 'endStreaming': {

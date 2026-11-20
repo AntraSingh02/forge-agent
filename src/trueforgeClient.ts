@@ -1,5 +1,3 @@
-import * as http from 'http';
-
 export interface TurnDelta {
   text?: string;
   toolCall?: {
@@ -14,8 +12,8 @@ export class TrueForgeClient {
   private baseUrl: string;
   private currentSessionId: string | null = null;
   private currentTurnId: string | null = null;
-  private primaryAgentName: string = 'forge-coding-agent';
-  private fallbackAgentName: string = 'forge-coding-agent-fallback';
+  public primaryAgentName: string = 'forge-coding-agent';
+  public fallbackAgentName: string = 'forge-coding-agent-fallback';
 
   constructor(baseUrl: string = 'http://localhost:8790') {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -30,8 +28,8 @@ export class TrueForgeClient {
     }
   }
 
-  public async getOrCreateSession(agentName?: string): Promise<string> {
-    if (this.currentSessionId) {
+  public async getOrCreateSession(agentName?: string, forceNew: boolean = false): Promise<string> {
+    if (this.currentSessionId && !forceNew) {
       return this.currentSessionId;
     }
 
@@ -69,9 +67,31 @@ export class TrueForgeClient {
   public async runTurn(
     prompt: string,
     onDelta?: (delta: TurnDelta) => void,
+    abortSignal?: AbortSignal,
+    preferredAgent?: string
+  ): Promise<string> {
+    let agentToUse = preferredAgent || this.primaryAgentName;
+
+    try {
+      return await this.executeTurnWithAgent(agentToUse, prompt, onDelta, abortSignal);
+    } catch (err: any) {
+      // If error is not a user cancellation and we haven't tried fallback yet, attempt fallback model
+      if (!abortSignal?.aborted && agentToUse !== this.fallbackAgentName && !err.message?.includes('Cancelled')) {
+        console.warn(`Primary agent (${agentToUse}) failed: ${err.message}. Attempting fallback to ${this.fallbackAgentName}...`);
+        this.resetSession();
+        return await this.executeTurnWithAgent(this.fallbackAgentName, prompt, onDelta, abortSignal);
+      }
+      throw err;
+    }
+  }
+
+  private async executeTurnWithAgent(
+    agentName: string,
+    prompt: string,
+    onDelta?: (delta: TurnDelta) => void,
     abortSignal?: AbortSignal
   ): Promise<string> {
-    const sessionId = await this.getOrCreateSession();
+    const sessionId = await this.getOrCreateSession(agentName, false);
 
     const turnPayload = {
       stream: true,
@@ -98,6 +118,18 @@ export class TrueForgeClient {
       throw err;
     }
 
+    // If session was locked or invalid, create new session and retry once
+    if (response.status === 400 || response.status === 404 || response.status === 409) {
+      this.resetSession();
+      const freshSessionId = await this.getOrCreateSession(agentName, true);
+      response = await fetch(`${this.baseUrl}/api/v1/sessions/${freshSessionId}/turns`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(turnPayload),
+        signal: abortSignal,
+      });
+    }
+
     if (!response.ok) {
       const errText = await response.text();
       throw new Error(`TrueForge turn error (${response.status}): ${errText}`);
@@ -112,6 +144,7 @@ export class TrueForgeClient {
     const decoder = new TextDecoder();
     let accumulatedText = '';
     let buffer = '';
+    let recordedTurnId: string | null = null;
 
     while (true) {
       if (abortSignal?.aborted) {
@@ -120,7 +153,9 @@ export class TrueForgeClient {
       }
 
       const { done, value } = await reader.read();
-      if (done) {break;}
+      if (done) {
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -128,7 +163,9 @@ export class TrueForgeClient {
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith(':')) {continue;}
+        if (!trimmed || trimmed.startsWith(':')) {
+          continue;
+        }
 
         if (trimmed.startsWith('data:')) {
           const jsonStr = trimmed.slice(5).trim();
@@ -141,14 +178,19 @@ export class TrueForgeClient {
           try {
             parsed = JSON.parse(jsonStr);
           } catch {
-            continue; // Ignore JSON parse errors on partial frames
+            continue;
           }
 
-          // Handle trueforge SSE event structure
+          if (parsed.turn_id) {
+            recordedTurnId = parsed.turn_id;
+            this.currentTurnId = parsed.turn_id;
+          }
+
+          // TrueForge delivers delta text either in parsed.content or parsed.delta.content
           const textChunk =
+            parsed.content ||
             parsed.delta?.content ||
             parsed.output?.content ||
-            parsed.content ||
             (parsed.type === 'delta' ? parsed.text : '');
 
           if (textChunk) {
@@ -165,8 +207,9 @@ export class TrueForgeClient {
             onDelta?.({ done: true });
           }
 
-          if (parsed.turn_id) {
-            this.currentTurnId = parsed.turn_id;
+          if (parsed.state?.status === 'paused') {
+            // Turn entered paused state (e.g. tool execution checkpoint)
+            onDelta?.({ done: true });
           }
 
           if (parsed.state?.status === 'error' || parsed.type === 'error' || parsed.error) {
@@ -181,6 +224,29 @@ export class TrueForgeClient {
             throw new Error(errMsg);
           }
         }
+      }
+    }
+
+    // Fallback: If no text was accumulated over SSE, query the turn events
+    if (!accumulatedText.trim() && recordedTurnId && this.currentSessionId) {
+      try {
+        const eventsRes = await fetch(`${this.baseUrl}/api/v1/sessions/${this.currentSessionId}/turns/${recordedTurnId}/events`);
+        if (eventsRes.ok) {
+          const eventsJson = (await eventsRes.json()) as any;
+          const events = eventsJson.data || [];
+          for (const ev of events) {
+            if (ev.content && typeof ev.content === 'string') {
+              accumulatedText += ev.content;
+            } else if (ev.output?.content) {
+              accumulatedText += ev.output.content;
+            }
+          }
+          if (accumulatedText) {
+            onDelta?.({ text: accumulatedText, done: true });
+          }
+        }
+      } catch {
+        // Ignore fallback error
       }
     }
 
