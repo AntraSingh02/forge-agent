@@ -1,0 +1,96 @@
+{
+  "name": "forge-agent",
+  "displayName": "Forge Agent (TrueForge Copilot)",
+  "description": "TrueForge-native coding agent for VS Code with Inline Edit, Autonomous Multi-File Agent Mode, and Hunk-by-Hunk Diff Safety.",
+  "version": "0.1.0",
+  "publisher": "forge-team",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/truefoundry/trueforge"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:forge.agentView",
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "forge.inlineEdit",
+        "title": "Forge: Inline Edit",
+        "category": "Forge Agent"
+      },
+      {
+        "command": "forge.acceptHunk",
+        "title": "Forge: Accept Hunk",
+        "category": "Forge Agent"
+      },
+      {
+        "command": "forge.rejectHunk",
+        "title": "Forge: Reject Hunk",
+        "category": "Forge Agent"
+      },
+      {
+        "command": "forge.undoChange",
+        "title": "Forge: Undo Applied Change",
+        "category": "Forge Agent"
+      },
+      {
+        "command": "forge.openAgentPanel",
+        "title": "Forge: Open Agent Panel",
+        "category": "Forge Agent"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "forge.inlineEdit",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "editorTextFocus"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "forge-explorer",
+          "title": "Forge Agent",
+          "icon": "$(sparkle)"
+        }
+      ]
+    },
+    "views": {
+      "forge-explorer": [
+        {
+          "type": "webview",
+          "id": "forge.agentView",
+          "name": "Forge Autonomous Agent"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "node esbuild.js",
+    "build:watch": "node esbuild.js --watch"
+  },
+  "dependencies": {
+    "diff": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/diff": "^5.2.1",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.4.5"
+  }
+}
