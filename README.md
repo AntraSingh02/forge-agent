@@ -89,8 +89,8 @@ TrueForge starts in standalone mode on `http://localhost:8790`.
 1. Open [http://localhost:8790](http://localhost:8790) in your browser.
 2. Navigate to **Settings** $\rightarrow$ **Model Providers**.
 3. Select **Google Gemini** (or **OpenAI-compatible** / **Groq**).
-4. Enter your API key and configure model: `google-gemini/gemini-3-5-flash`.
-5. *(Optional for Resilience)* Configure a second fallback model provider.
+4. Enter your API key and configure model: `google-gemini/gemini-3-5-flash-lite`.
+5. *(Optional for Resilience)* Configure a second fallback model provider(GROQ 120b added here).
 
 ### 3. Build & Install the Extension
 ```bash
@@ -102,7 +102,7 @@ npm run build
 To run in development mode inside VS Code:
 1. Open the `forge-agent` (or forge-extension-folder) folder in VS Code.
 2. Press **`F5`** to launch the **Extension Development Host**.
-3. Open the benchmark repository (`pallets/flask` checked out to commit `22d92470`) in the new window.
+3. Open the benchmark repository (`pallets/flask` (tag 3.13) checked out to commit `22d92470`) in the new window.
 
 ---
 
