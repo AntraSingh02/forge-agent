@@ -1,3 +1,5 @@
+import * as vscode from 'vscode';
+
 export interface TurnDelta {
   text?: string;
   toolCall?: {
@@ -78,8 +80,22 @@ export class TrueForgeClient {
       // If error is not a user cancellation and we haven't tried fallback yet, attempt fallback model
       if (!abortSignal?.aborted && agentToUse !== this.fallbackAgentName && !err.message?.includes('Cancelled')) {
         console.warn(`Primary agent (${agentToUse}) failed: ${err.message}. Attempting fallback to ${this.fallbackAgentName}...`);
+        vscode.window.showWarningMessage(
+          `Forge Resilience: Primary model endpoint unreachable or key invalid. Automatically switching to fallback model (${this.fallbackAgentName})...`
+        );
         this.resetSession();
-        return await this.executeTurnWithAgent(this.fallbackAgentName, prompt, onDelta, abortSignal);
+        try {
+          const result = await this.executeTurnWithAgent(this.fallbackAgentName, prompt, onDelta, abortSignal);
+          vscode.window.showInformationMessage(
+            `Forge Resilience: Task successfully executed via fallback model (${this.fallbackAgentName}). Workspace diff ready for review.`
+          );
+          return result;
+        } catch (fallbackErr: any) {
+          vscode.window.showErrorMessage(
+            `Forge Resilience: Both primary and fallback models failed (${fallbackErr.message}). Workspace remains completely unchanged.`
+          );
+          throw fallbackErr;
+        }
       }
       throw err;
     }

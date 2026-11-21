@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TrueFoundry Forge-a-thon: Technical Write-Up</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 1.2cm 1.4cm;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 9.5pt;
+      line-height: 1.4;
+      color: #1a1a1a;
+      margin: 0;
+      padding: 0;
+    }
+    h1 {
+      font-size: 16pt;
+      margin-top: 0;
+      margin-bottom: 2px;
+      color: #0b5cab;
+      border-bottom: 2px solid #0b5cab;
+      padding-bottom: 3px;
+    }
+    .subtitle {
+      font-size: 9pt;
+      color: #555;
+      margin-bottom: 12px;
+    }
+    h2 {
+      font-size: 11pt;
+      color: #111;
+      margin-top: 10px;
+      margin-bottom: 3px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 2px;
+    }
+    p, ul, ol {
+      margin-top: 2px;
+      margin-bottom: 4px;
+    }
+    ul, ol {
+      padding-left: 18px;
+    }
+    li {
+      margin-bottom: 2px;
+    }
+    code {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 8.5pt;
+      background: #f4f4f4;
+      padding: 1px 3px;
+      border-radius: 2px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 6px;
+      margin-bottom: 6px;
+      font-size: 8.5pt;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 4px 6px;
+      text-align: left;
+    }
+    th {
+      background-color: #f0f4f8;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>TrueFoundry Forge-a-thon: Technical Write-Up</h1>
+  <div class="subtitle">
+    <strong>Team:</strong> Forge Team &nbsp;|&nbsp;
+    <strong>Extension:</strong> Forge Agent (TrueForge Copilot for VS Code) &nbsp;|&nbsp;
+    <strong>Benchmark:</strong> pallets/flask (commit 22d92470)
+  </div>
+
+  <h2>1. Team</h2>
+  <ul>
+    <li><strong>Member:</strong> Anuj Das (Full-Stack &amp; Systems Developer) &nbsp;|&nbsp; <strong>GitHub:</strong> <a href="https://github.com/anxj-xe">@anxj-xe</a></li>
+    <li><strong>Event:</strong> Techfest 2026–27, IIT Bombay — TrueFoundry Forge-a-thon Round 1</li>
+  </ul>
+
+  <h2>2. Starting Point</h2>
+  <ul>
+    <li><strong>Starting Point:</strong> Built <strong>from scratch</strong> as an editor-native TrueForge extension for Visual Studio Code.</li>
+    <li><strong>Design Rationale:</strong> Rather than inheriting the legacy baggage of existing open-source coding tools (Cline, Continue, Roo Code) that bind prompt loops to proprietary backends, Forge Agent was engineered from inception around <strong>TrueForge</strong> as the single orchestration harness.</li>
+    <li><strong>Harness:</strong> Runs against <code>@truefoundry/trueforge@latest</code> locally on port 8790. MIT license preserved.</li>
+    <li><strong>Repository:</strong> Public at <code>https://github.com/anxj-xe/forge-agent.git</code>.</li>
+  </ul>
+
+  <h2>3. Architecture on TrueForge</h2>
+  <ul>
+    <li><strong>Client Layer (VS Code Extension):</strong> Manages user interactions: Inline Edit (<code>Ctrl+K</code>), Sidebar Webview, and CodeLens reviews. Embedded within the extension is an HTTP MCP Bridge server on <code>http://127.0.0.1:8792</code> exposing core tools: <code>read_file</code>, <code>search_workspace</code>, <code>propose_edit</code>, and <code>run_terminal_command</code>.</li>
+    <li><strong>Harness Layer (TrueForge on port 8790):</strong> The client creates sessions via <code>POST /api/v1/sessions</code> and sends turns via <code>POST /api/v1/sessions/:id/turns</code>. Real-time token streaming is ingested over Server-Sent Events (SSE). Immediate cancellation is driven via <code>POST /api/v1/sessions/:id/turns/:turnId/cancel</code>.</li>
+    <li><strong>Harness Features Utilized:</strong>
+      <ul>
+        <li><em>Context Compaction (<code>compaction: { enabled: true }</code>):</em> Compresses conversational trajectory to prevent context overflow.</li>
+        <li><em>Large Tool Response Truncation (<code>large_tool_response: { enabled: true }</code>):</em> Protects against oversized workspace file scans.</li>
+        <li><em>Dynamic Subagents:</em> Enabled in agent manifest for modular task delegation.</li>
+      </ul>
+    </li>
+  </ul>
+
+  <h2>4. How Context is Selected</h2>
+  <p>Context selection is governed by <code>ContextEngine</code> operating under a strict <strong>16 KB size budget</strong>:</p>
+  <ul>
+    <li><strong>Explicit Mentions:</strong> Resolves <code>@file:&lt;path&gt;</code> and <code>@symbol:&lt;name&gt;</code> tags. For symbols, it queries VS Code's Workspace Symbol Provider to extract only the enclosing function/class definition rather than loading entire files.</li>
+    <li><strong>Autonomous Relevance Ranking:</strong> For unprompted multi-file requests (Task B), the engine extracts high-signal keywords from the prompt and computes a relevance score across workspace paths and contents in <code>src/</code>, <code>tests/</code>, and <code>docs/</code>. Top candidates are truncated to fit within the budget.</li>
+    <li><strong>Transparency:</strong> Every assembled context displays a real-time summary log in the UI (e.g. <code>Budget: 16 KB | Used: 11 KB | Files: 3</code>), logging which files were selected and the rationale.</li>
+  </ul>
+
+  <h2>5. Model Setup</h2>
+  <ul>
+    <li><strong>Primary Model:</strong> <code>google-gemini/gemini-3-5-flash-lite</code> (configured in TrueForge model catalog).</li>
+    <li><strong>Fallback Model:</strong> <code>google-gemini/gemini-3-5-flash</code> (configured in TrueForge model catalog).</li>
+    <li><strong>Hosting &amp; Costs:</strong> Served via Google AI Studio through TrueForge's local harness; approximate cost is $0.00 (under free tier).</li>
+    <li><strong>Model Switching &amp; Resilience:</strong> Users can switch models in the TrueForge Settings UI or update <code>agents/forge-coding-agent.json</code>. The extension's <code>ResilienceManager</code> automatically falls back to <code>forge-coding-agent-fallback</code> upon connection timeout, unreachable host, or authentication error, requiring zero user action.</li>
+  </ul>
+
+  <h2>6. Scorecard</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 25%;">Judging Criterion</th>
+        <th style="width: 15%;">Video Time</th>
+        <th>One-Line Claim</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>A1. Inline Edit</strong> (10 pts)</td>
+        <td><code>00:35</code></td>
+        <td><code>Ctrl+K</code> triggers diff rendered with CodeLens per-hunk accept/reject and side-by-side diff review.</td>
+      </tr>
+      <tr>
+        <td><strong>A2. Agent Mode</strong> (10 pts)</td>
+        <td><code>01:40</code></td>
+        <td>Discovers and edits 3+ files (<code>cli.py</code>, <code>test_cli.py</code>, <code>cli.rst</code>) unprompted without user naming them.</td>
+      </tr>
+      <tr>
+        <td><strong>A3. Streaming &amp; Cancellation</strong> (10 pts)</td>
+        <td><code>02:25</code></td>
+        <td>Real-time SSE token stream; immediate Stop button halts generation leaving workspace 100% clean.</td>
+      </tr>
+      <tr>
+        <td><strong>B1. Context Assembly</strong> (15 pts)</td>
+        <td><code>01:10</code></td>
+        <td>16 KB budget with @file/@symbol resolution; shows selected files and reasons visibly on screen.</td>
+      </tr>
+      <tr>
+        <td><strong>B2. Diff Safety</strong> (10 pts)</td>
+        <td><code>02:05</code></td>
+        <td>Review buffers prevent silent writes; selective per-hunk patching and working undo stack shown.</td>
+      </tr>
+      <tr>
+        <td><strong>B3. Resilience</strong> (10 pts)</td>
+        <td><code>03:10</code></td>
+        <td>Unreachable endpoint/invalid key triggers automatic model fallback; editor stays responsive.</td>
+      </tr>
+      <tr>
+        <td><strong>B4. TrueForge Depth</strong> (10 pts)</td>
+        <td><code>01:50</code></td>
+        <td>Direct session/turn API, SSE streaming, compaction, and embedded MCP bridge on port 8792.</td>
+      </tr>
+      <tr>
+        <td><strong>C1. Demo Video</strong> (10 pts)</td>
+        <td><code>00:00–03:50</code></td>
+        <td>Tasks A, B, and C in order with terminal verification and TrueForge session tab shown.</td>
+      </tr>
+      <tr>
+        <td><strong>C2. Write-Up</strong> (15 pts)</td>
+        <td>Document</td>
+        <td>Comprehensive 8-heading write-up detailing architecture, context strategy, models, and trade-offs.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>7. Tools Used</h2>
+  <ul>
+    <li><strong>Core Stack:</strong> TypeScript 5.4, Node.js 20+, VS Code Extension API (<code>^1.85.0</code>), <code>esbuild</code>.</li>
+    <li><strong>Frameworks &amp; Libraries:</strong> <code>@truefoundry/trueforge</code> agent harness, <code>diff</code> (jsdiff) for structured patching.</li>
+    <li><strong>AI Assistants:</strong> Google Antigravity &amp; Gemini CLI used during development (declared per competition rules; costs no points).</li>
+  </ul>
+
+  <h2>8. Known Limitations &amp; Future Work</h2>
+  <ul>
+    <li><strong>Limitations:</strong> The MCP Bridge operates over local HTTP port (<code>8792</code>); concurrent external applications using the port can cause brief port-shift overhead. Context ranking uses lexical frequency rather than dense embeddings due to local compute bounds.</li>
+    <li><strong>What We Would Build With Another Month:</strong>
+      <ol>
+        <li><em>Native stdio MCP Transport:</em> Switch MCP Bridge to stdio communication to eliminate network port bindings entirely.</li>
+        <li><em>Tree-Sitter Semantic Call Graphs:</em> Integrate Tree-Sitter AST parsing to trace symbol dependencies across imports automatically.</li>
+        <li><em>Interactive Multi-Turn Diff Refinement:</em> Allow users to highlight specific hunks and submit natural-language follow-ups prior to acceptance.</li>
+      </ol>
+    </li>
+  </ul>
+
+</body>
+</html>

@@ -1,0 +1,40 @@
+{
+  "name": "forge-coding-agent",
+  "description": "TrueForge autonomous coding copilot agent for VS Code",
+  "manifest": {
+    "model": {
+      "name": "google-gemini/gemini-3-5-flash-lite"
+    },
+    "instructions": "You are ForgeAgent, an autonomous expert coding assistant for VS Code. When asked to implement or modify code across the codebase, autonomously discover all necessary files (e.g. implementation, tests, and documentation). Propose changes cleanly with ### File: path headers and complete code blocks.",
+    "config": {
+      "iteration_limit": 512,
+      "sandbox": {
+        "enabled": false,
+        "file_downloads": true
+      },
+      "dynamic_sub_agents": {
+        "enabled": true
+      },
+      "context_management": {
+        "compaction": {
+          "enabled": true
+        },
+        "large_tool_response": {
+          "enabled": true
+        }
+      },
+      "generative_ui": {
+        "enabled": true
+      },
+      "ask_user_questions": {
+        "enabled": false
+      },
+      "web_search": {
+        "enabled": false
+      },
+      "memory": {
+        "enabled": false
+      }
+    }
+  }
+}
