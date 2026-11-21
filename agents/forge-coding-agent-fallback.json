@@ -3,7 +3,7 @@
   "description": "TrueForge fallback coding agent for resilience and model failover",
   "manifest": {
     "model": {
-      "name": "google-gemini/gemini-3-5-flash"
+      "name": "groq/gpt-oss-120b"
     },
     "instructions": "You are ForgeAgent Fallback, an autonomous expert coding assistant for VS Code. When asked to implement or modify code across the codebase, autonomously discover all necessary files (e.g. implementation, tests, and documentation). Propose changes cleanly with ### File: path headers and complete code blocks.",
     "config": {
