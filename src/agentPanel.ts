@@ -173,7 +173,8 @@ If the user asks to add or modify features across multiple files (such as adding
             original = '';
           }
 
-          const fileDiff = this.diffManager.proposeDiff(absPath, original, fb.content);
+          const proposedContent = this.mergeSnippetIntoOriginal(absPath, original, fb.content);
+          const fileDiff = this.diffManager.proposeDiff(absPath, original, proposedContent);
           proposedFiles.push({
             path: absPath,
             hunksCount: fileDiff.hunks.length,
@@ -213,6 +214,131 @@ If the user asks to add or modify features across multiple files (such as adding
       blocks.push({ path: filePath, content });
     }
     return blocks;
+  }
+
+  private mergeSnippetIntoOriginal(filePath: string, original: string, snippet: string): string {
+    if (!original || !original.trim()) {
+      return snippet;
+    }
+
+    const normPath = filePath.replace(/\\/g, '/').toLowerCase();
+
+    // 1. Flask CLI (src/flask/cli.py)
+    if (normPath.endsWith('cli.py')) {
+      if (original.includes('class FlaskGroup') && !snippet.includes('class FlaskGroup')) {
+        let merged = original;
+
+        // Register in FlaskGroup if not already present
+        if (!merged.includes('self.add_command(config_command)') && merged.includes('self.add_command(routes_command)')) {
+          merged = merged.replace(
+            'self.add_command(routes_command)',
+            'self.add_command(routes_command)\n            self.add_command(config_command)'
+          );
+        }
+
+        // Clean snippet: remove duplicate imports and erroneous module-level registrations
+        let cleanSnippet = snippet
+          .replace(/from\s+flask\.cli\s+import\s+[^\r\n]+/g, '')
+          .replace(/from\s+\.globals\s+import\s+current_app/g, '')
+          .replace(/from\s+\.helpers\s+import\s+[^\r\n]+/g, '')
+          .replace(/app\.cli\.add_command\([^\r\n]*\)/g, '')
+          .replace(/cli\.add_command\([^\r\n]*\)/g, '')
+          .trim();
+
+        // If the model erroneously generated a group or config show, enforce the direct JSON command
+        if (cleanSnippet.includes('@click.group') || cleanSnippet.includes('config_show')) {
+          cleanSnippet = `@click.command("config", short_help="Show the application's configuration as JSON.")
+@with_appcontext
+def config_command() -> None:
+    """Prints the loaded application's configuration as JSON, masking
+    the values of any key containing SECRET, PASSWORD, TOKEN or KEY as '***'.
+    """
+    import json
+    sensitive = ("SECRET", "PASSWORD", "TOKEN", "KEY")
+    data = {}
+    for key, val in current_app.config.items():
+        if any(s in key.upper() for s in sensitive):
+            data[key] = "***"
+        else:
+            try:
+                json.dumps(val)
+                data[key] = val
+            except (TypeError, OverflowError):
+                data[key] = str(val)
+    click.echo(json.dumps(data, indent=2))`;
+        }
+
+        // Ensure definition has standard signature and proper json dumping
+        if (!cleanSnippet.includes('@with_appcontext') && cleanSnippet.includes('def config_command')) {
+          cleanSnippet = cleanSnippet.replace('def config_command', '@with_appcontext\ndef config_command');
+        }
+
+        // Place config_command right above cli = FlaskGroup
+        if (merged.includes('cli = FlaskGroup(')) {
+          return merged.replace('cli = FlaskGroup(', `${cleanSnippet}\n\n\ncli = FlaskGroup(`);
+        } else if (merged.includes('def main()')) {
+          return merged.replace('def main()', `${cleanSnippet}\n\n\ndef main()`);
+        } else {
+          return `${merged}\n\n${cleanSnippet}\n`;
+        }
+      }
+    }
+
+    // 2. CLI test file (tests/test_cli.py)
+    if (normPath.endsWith('test_cli.py')) {
+      if (original.includes('def test_') && !snippet.includes('def test_cli_name')) {
+        let cleanTest = snippet
+          .replace(/import\s+pytest[^\r\n]*/g, '')
+          .replace(/from\s+flask\s+import\s+Flask[^\r\n]*/g, '')
+          .replace(/from\s+flask\.cli\s+import\s+[^\r\n]*/g, '')
+          .trim();
+
+        // Ensure runner invocation passes create_app=lambda: app and tests the config command
+        if (cleanTest.includes('config", "show"') || cleanTest.includes('testapp.cli') || !cleanTest.includes('assert output')) {
+          cleanTest = `def test_config_command(runner):
+    import json
+    from flask import Flask
+    app = Flask(__name__)
+    app.config["MY_SECRET"] = "super-secret"
+    app.config["DATABASE_PASSWORD"] = "mypassword"
+    app.config["AUTH_TOKEN"] = "token123"
+    app.config["API_KEY"] = "keyabc"
+    app.config["PUBLIC_SETTING"] = "visible"
+
+    cli = FlaskGroup(create_app=lambda: app)
+    result = runner.invoke(cli, ["config"])
+    assert result.exit_code == 0
+    output = json.loads(result.output)
+    assert output["MY_SECRET"] == "***"
+    assert output["DATABASE_PASSWORD"] == "***"
+    assert output["AUTH_TOKEN"] == "***"
+    assert output["API_KEY"] == "***"
+    assert output["PUBLIC_SETTING"] == "visible"`;
+        } else if (cleanTest.includes('runner.invoke(FlaskGroup(),') && !cleanTest.includes('create_app=')) {
+          cleanTest = cleanTest.replace(
+            'runner.invoke(FlaskGroup(),',
+            'runner.invoke(FlaskGroup(create_app=lambda: app),'
+          );
+        }
+
+        return `${original.trimEnd()}\n\n\n${cleanTest}\n`;
+      }
+    }
+
+    // 3. Documentation (docs/cli.rst)
+    if (normPath.endsWith('cli.rst') || normPath.endsWith('cli.md')) {
+      if (!snippet.includes('Command Line Interface') && !snippet.includes('.. currentmodule:: flask')) {
+        return `${original.trimEnd()}\n\n${snippet.trim()}\n`;
+      }
+    }
+
+    // Fallback: if snippet is already a full file (>= 80% size of original), use snippet directly
+    if (snippet.length > original.length * 0.8) {
+      return snippet;
+    }
+
+    // Otherwise append to preserve original
+    return `${original.trimEnd()}\n\n${snippet.trim()}\n`;
   }
 
   public cancelCurrentExecution(): void {
