@@ -100,7 +100,7 @@ npm run build
 ```
 
 To run in development mode inside VS Code:
-1. Open the `forge-extension` folder in VS Code.
+1. Open the `forge-agent` (or forge-extension-folder) folder in VS Code.
 2. Press **`F5`** to launch the **Extension Development Host**.
 3. Open the benchmark repository (`pallets/flask` checked out to commit `22d92470`) in the new window.
 
@@ -117,7 +117,7 @@ To run in development mode inside VS Code:
 5. Review the proposed diff hunks in the editor and click **[✓ Accept Hunk]**.
 6. Verify in terminal:
    ```bash
-   FLASK_DEBUG=off python -c "from flask.helpers import get_debug_flag; print(get_debug_flag())"
+   $env:FLASK_DEBUG="off"; python -c "import sys; sys.path.insert(0, 'src'); from flask.helpers import get_debug_flag; print(get_debug_flag())"
    ```
    **Output:** `False`
 
